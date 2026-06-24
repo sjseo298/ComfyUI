@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# ComfyUI Plus wrapper - finds the correct Python to use
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Check if venv exists - if it does, use the venv Python
+VENV_PYTHON=""
+if [ -f "$SCRIPT_DIR/.venv/bin/python3" ]; then
+    VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python3"
+elif [ -f "$SCRIPT_DIR/.venv/bin/python" ]; then
+    VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python"
+fi
+
+if [ -n "$VENV_PYTHON" ]; then
+    # Venv exists, use it
+    exec "$VENV_PYTHON" "$SCRIPT_DIR/comfyuiplus.py"
+fi
+
+# Venv doesn't exist, try Python 3.12+ first (has requests)
+for candidate in \
+    "/opt/homebrew/bin/python3.12" \
+    "/opt/homebrew/bin/python3.11" \
+    "/opt/homebrew/bin/python3.10" \
+    "/usr/local/bin/python3.12" \
+    "/usr/local/bin/python3.11" \
+    "/usr/local/bin/python3.10"; do
+    if [ -f "$candidate" ]; then
+        # Check if requests is available
+        if "$candidate" -c "import requests" 2>/dev/null; then
+            exec "$candidate" "$SCRIPT_DIR/comfyuiplus.py"
+        fi
+    fi
+done
+
+# Fallback to system Python (may have ImportError for requests)
+exec python3 "$SCRIPT_DIR/comfyuiplus.py"
