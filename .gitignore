@@ -7,7 +7,13 @@ __pycache__/
 /temp/
 /custom_nodes/
 !custom_nodes/example_node.py.example
-extra_model_paths.yaml
+</parameter>
+</function>
+</tool_call>
+<tool_call>
+<function=edit>
+<parameter=filePath>
+/Users/atlantis/Documents/Desarrollo/ComfyUI/.gitignore
 /.vs
 .vscode/
 .idea/
@@ -20,6 +26,7 @@ venv*/
 /user/
 *.log
 web_custom_versions/
+.comfyui.pid
 .DS_Store
 filtered-openapi.yaml
 uv.lock

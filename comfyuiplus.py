@@ -43,12 +43,7 @@ COMFYUI_DIR = os.path.dirname(os.path.abspath(__file__))
 LLAMA_SERVER_URL = "http://127.0.0.1:9999"
 COMFYUI_PID_FILE = os.path.join(COMFYUI_DIR, ".comfyui.pid")
 VENV_DIR = os.path.join(COMFYUI_DIR, ".venv")
-
-console = Console()
-COMFYUI_DIR = os.path.dirname(os.path.abspath(__file__))
-LLAMA_SERVER_URL = "http://127.0.0.1:9999"
-COMFYUI_PID_FILE = os.path.join(COMFYUI_DIR, ".comfyui.pid")
-VENV_DIR = os.path.join(COMFYUI_DIR, ".venv")
+MANAGER_DIR = os.path.join(COMFYUI_DIR, "custom_nodes", "comfyui-manager")
 
 
 def get_required_python_version():
@@ -244,11 +239,42 @@ def is_comfyui_running():
     return False
 
 
+def update_comfyui_manager():
+    """Actualizar ComfyUI-Manager"""
+    if not os.path.exists(MANAGER_DIR):
+        console.print(Panel("[yellow]ComfyUI-Manager no instalado. Instalando...[/yellow]", border_style="yellow"))
+        console.print(f"[dim]Clonando en {MANAGER_DIR}[/dim]")
+        result = subprocess.run(
+            ["git", "clone", "https://github.com/ltdrdata/ComfyUI-Manager", "comfyui-manager"],
+            cwd=os.path.join(COMFYUI_DIR, "custom_nodes"),
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            console.print(f"[red]✗ Error al clonar: {result.stderr}[/]")
+            return False
+    else:
+        console.print(Panel("[cyan]Actualizando ComfyUI-Manager...[/cyan]", border_style="cyan"))
+        result = subprocess.run(
+            ["git", "pull", "origin", "main"],
+            cwd=MANAGER_DIR,
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            console.print(f"[yellow]⚠ No se pudo actualizar ComfyUI-Manager: {result.stderr}[/]")
+        else:
+            console.print("[green]✓ ComfyUI-Manager actualizado[/]")
+    return True
+
+
 def run_comfyui():
     """Ejecutar ComfyUI"""
     if is_comfyui_running():
         console.print(Panel("[bold yellow]ComfyUI ya se está ejecutando[/bold yellow]", border_style="yellow"))
         return
+    
+    # Verificar y actualizar ComfyUI-Manager antes de iniciar
+    console.print(Panel("[cyan]Verificando ComfyUI-Manager...[/cyan]", border_style="cyan"))
+    update_comfyui_manager()
     
     console.print(Panel.fit(
         "[bold green]Iniciando ComfyUI...[/bold green]\n"
@@ -274,7 +300,7 @@ def run_comfyui():
         f.write(str(os.getpid()))
     
     try:
-        subprocess.run([python_exec, "main.py"], cwd=COMFYUI_DIR)
+        subprocess.run([python_exec, "main.py", "--enable-manager"], cwd=COMFYUI_DIR)
     except KeyboardInterrupt:
         pass
     finally:
@@ -377,6 +403,10 @@ def update_and_summary():
         task.update(description="Trayendo cambios de upstream...")
         subprocess.run(["git", "fetch", "upstream"], capture_output=True, cwd=COMFYUI_DIR)
         subprocess.run(["git", "pull", "upstream", "master"], capture_output=True, cwd=COMFYUI_DIR)
+        
+        task.update(description="Actualizando ComfyUI-Manager...")
+        if os.path.exists(MANAGER_DIR):
+            subprocess.run(["git", "pull", "origin", "main"], capture_output=True, cwd=MANAGER_DIR)
         
         task.update(description="Instalando dependencias...")
         subprocess.run([venv_python, "-m", "pip", "install", "-r", "requirements.txt"], 
