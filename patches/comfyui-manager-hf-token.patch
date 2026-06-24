@@ -1,0 +1,112 @@
+diff --git a/glob/manager_core.py b/glob/manager_core.py
+index 63ce1e4b..e5fb987d 100644
+--- a/glob/manager_core.py
++++ b/glob/manager_core.py
+@@ -44,8 +44,8 @@ import manager_migration
+ from node_package import InstalledNodePackage
+ 
+ 
+-version_code = [3, 41]
+-version_str = f"V{version_code[0]}.{version_code[1]}" + (f'.{version_code[2]}' if len(version_code) > 2 else '')
++version_code = [4, 2, 2]
++version_str = f"V{version_code[0]}.{version_code[1]}.{version_code[2]}"
+ 
+ 
+ DEFAULT_CHANNEL = "https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main"
+diff --git a/glob/manager_downloader.py b/glob/manager_downloader.py
+index 2718de50..f7df2f05 100644
+--- a/glob/manager_downloader.py
++++ b/glob/manager_downloader.py
+@@ -10,6 +10,7 @@ from tqdm.auto import tqdm
+ 
+ aria2 = os.getenv('COMFYUI_MANAGER_ARIA2_SERVER')
+ HF_ENDPOINT = os.getenv('HF_ENDPOINT')
++HF_TOKEN = os.getenv('HF_TOKEN')
+ 
+ 
+ if aria2 is not None:
+@@ -58,6 +59,21 @@ def download_url(model_url: str, model_dir: str, filename: str):
+         try:
+             return torchvision_download_url(model_url, model_dir, filename)
+         except Exception as e:
++            # If download failed with HuggingFace URL, retry with HF_TOKEN for gated repos
++            if HF_TOKEN and 'huggingface' in model_url:
++                logging.info(f"[ComfyUI-Manager] Retrying HuggingFace download with HF_TOKEN: {model_url}")
++                headers = {'Authorization': f'Bearer {HF_TOKEN}'}
++                if not os.path.exists(model_dir):
++                    os.makedirs(model_dir)
++                dest_path = os.path.join(model_dir, filename)
++                with requests.get(model_url, stream=True, headers=headers) as r:
++                    r.raise_for_status()
++                    with open(dest_path, "wb") as f:
++                        for chunk in r.iter_content(chunk_size=65536):
++                            if chunk:
++                                f.write(chunk)
++                logging.info(f"[ComfyUI-Manager] Download succeeded with HF_TOKEN: {model_url}")
++                return
+             logging.error(f"[ComfyUI-Manager] Failed to download: {model_url} / {repr(e)}")
+             raise
+ 
+diff --git a/glob/manager_server.py b/glob/manager_server.py
+index 069b0d8a..cd4ebad7 100644
+--- a/glob/manager_server.py
++++ b/glob/manager_server.py
+@@ -1012,6 +1012,14 @@ def check_model_installed(json_obj):
+             if os.path.exists(os.path.join(x, filename)):
+                 return True
+ 
++        if 'download_model_base' in folder_paths.folder_names_and_paths:
++            download_model_base = folder_paths.folder_names_and_paths['download_model_base'][0][0]
++            if os.path.exists(os.path.join(download_model_base, filename)):
++                return True
++            # Check etc/ subfolder for custom model types
++            if os.path.exists(os.path.join(download_model_base, "etc", filename)):
++                return True
++
+         return False
+ 
+     model_dir_names = ['checkpoints', 'loras', 'vae', 'text_encoders', 'diffusion_models', 'clip_vision', 'embeddings',
+@@ -1035,7 +1043,19 @@ def check_model_installed(json_obj):
+             if model_dir_name is not None:
+                 item['installed'] = str(is_exists(model_dir_name, item['filename'], item['url']))
+             else:
+-                item['installed'] = 'False'
++                if 'download_model_base' in folder_paths.folder_names_and_paths:
++                    download_model_base = folder_paths.folder_names_and_paths['download_model_base'][0][0]
++                    filename = item['filename'] if item['filename'] != '<huggingface>' else os.path.basename(item['url'])
++                    # Check both in download_model_base and download_model_base/etc/
++                    # (custom model types are saved to etc/ subfolder)
++                    if os.path.exists(os.path.join(download_model_base, filename)):
++                        item['installed'] = 'True'
++                    elif os.path.exists(os.path.join(download_model_base, "etc", filename)):
++                        item['installed'] = 'True'
++                    else:
++                        item['installed'] = 'False'
++                else:
++                    item['installed'] = 'False'
+         else:
+             model_dir_name = item['save_path'].split('/')[0]
+             if model_dir_name in folder_paths.folder_names_and_paths:
+diff --git a/js/model-manager.js b/js/model-manager.js
+index d01c5399..03087e76 100644
+--- a/js/model-manager.js
++++ b/js/model-manager.js
+@@ -532,7 +532,7 @@ export class ModelManager {
+ 	async onQueueCompleted(info) {
+ 		let result = info.model_result;
+ 
+-		if(result.length == 0) {
++		if(!result || Object.keys(result).length == 0) {
+ 			return;
+ 		}
+ 
+@@ -558,6 +558,9 @@ export class ModelManager {
+ 
+ 		for(let k in self.install_context.targets) {
+ 			let item = self.install_context.targets[k];
++			if(result[item.hash] == 'success') {
++				item.installed = "True";
++			}
+ 			self.grid.updateCell(item, "installed");
+ 		}
+ 

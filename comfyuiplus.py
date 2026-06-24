@@ -308,6 +308,18 @@ def run_comfyui():
     except ImportError:
         pass
     
+    # HuggingFace integration with ComfyUI-Manager:
+    # - The Manager (custom_nodes/comfyui-manager/glob/manager_downloader.py) reads HF_TOKEN from env
+    # - When downloading gated models (401 Unauthorized), it retries with Authorization header
+    # - The token is set in .env and loaded via python-dotenv before main.py runs
+    # - HfApi() in download_repo_in_bytes() automatically uses the token from env
+    #
+    # IMPORTANT: If manager_downloader.py is modified to change how HF_TOKEN is used,
+    # ensure the token is still available via os.getenv('HF_TOKEN') before running main.py
+    #
+    # Dependencies: python-dotenv (installed in .venv)
+    # Config: .env file with HF_TOKEN=hf_xxx, added to .gitignore
+    
     try:
         subprocess.run([python_exec, "main.py", "--enable-manager"], cwd=COMFYUI_DIR)
     except KeyboardInterrupt:
