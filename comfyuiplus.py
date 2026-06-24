@@ -299,6 +299,15 @@ def run_comfyui():
     with open(COMFYUI_PID_FILE, "w") as f:
         f.write(str(os.getpid()))
     
+    # Load .env to set environment variables (e.g., HF_TOKEN for HuggingFace)
+    try:
+        from dotenv import load_dotenv
+        env_path = os.path.join(COMFYUI_DIR, ".env")
+        if os.path.exists(env_path):
+            load_dotenv(env_path)
+    except ImportError:
+        pass
+    
     try:
         subprocess.run([python_exec, "main.py", "--enable-manager"], cwd=COMFYUI_DIR)
     except KeyboardInterrupt:
