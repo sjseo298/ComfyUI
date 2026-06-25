@@ -47,6 +47,9 @@ try:
             qdata_fp32 = qdata_cpu.to(dtype=torch.float32)
             scale_fp32 = scale_cpu.to(dtype=torch.float32)
             dequantized = qdata_fp32 * scale_fp32
+            # MPS doesn't support FP8 dtypes, so return as float32 on CPU
+            if output_dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                return dequantized.to(device='cpu', dtype=torch.float32)
             return dequantized.to(device='mps', dtype=output_dtype)
         return original_dequantize(qdata, params)
     
@@ -67,6 +70,9 @@ try:
                 qdata_fp32 = qdata_cpu.to(dtype=torch.float32)
                 scale_fp32 = scale_cpu.to(dtype=torch.float32)
                 dequantized = qdata_fp32 * scale_fp32
+                # MPS doesn't support FP8 dtypes, so return as float32 on CPU
+                if output_dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                    return dequantized.to(device='cpu', dtype=torch.float32)
                 return dequantized.to(device='mps', dtype=output_dtype)
             return original_mxfp8_dequantize(qdata, params)
         
@@ -86,6 +92,9 @@ try:
             qdata_fp32 = qdata_cpu.to(dtype=torch.float32)
             scale_fp32 = scale_cpu.to(dtype=torch.float32)
             dequantized = qdata_fp32 * scale_fp32
+            # MPS doesn't support FP8 dtypes, so return as float32 on CPU
+            if output_dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                return dequantized.to(device='cpu', dtype=torch.float32)
             return dequantized.to(device='mps', dtype=output_dtype)
         return original_nvfp4_dequantize(qdata, params)
     
