@@ -34,6 +34,62 @@ try:
         ck.registry.disable("triton")
     for k, v in ck.list_backends().items():
         logging.info(f"Found comfy_kitchen backend {k}: {v}")
+    
+    _CKFP8_LAYOUT = _CKFp8Layout
+    original_dequantize = _CKFP8_LAYOUT.dequantize
+    
+    @classmethod
+    def _ck_fp8_dequantize_patched(cls, qdata, params):
+        if qdata.device.type == 'mps' or params.scale.device.type == 'mps':
+            output_dtype = params.orig_dtype
+            qdata_cpu = qdata.to(device='cpu')
+            scale_cpu = params.scale.to(device='cpu')
+            qdata_fp32 = qdata_cpu.to(dtype=torch.float32)
+            scale_fp32 = scale_cpu.to(dtype=torch.float32)
+            dequantized = qdata_fp32 * scale_fp32
+            return dequantized.to(device='mps', dtype=output_dtype)
+        return original_dequantize(qdata, params)
+    
+    _CKFP8_LAYOUT.dequantize = _ck_fp8_dequantize_patched
+    
+    _CKMXFP8_LAYOUT = None
+    try:
+        from comfy_kitchen.tensor import TensorCoreMXFP8Layout as _CKMxfp8Layout
+        _CKMXFP8_LAYOUT = _CKMxfp8Layout
+        original_mxfp8_dequantize = _CKMXFP8_LAYOUT.dequantize
+        
+        @classmethod
+        def _ck_mxfp8_dequantize_patched(cls, qdata, params):
+            if qdata.device.type == 'mps' or params.scale.device.type == 'mps':
+                output_dtype = params.orig_dtype
+                qdata_cpu = qdata.to(device='cpu')
+                scale_cpu = params.scale.to(device='cpu')
+                qdata_fp32 = qdata_cpu.to(dtype=torch.float32)
+                scale_fp32 = scale_cpu.to(dtype=torch.float32)
+                dequantized = qdata_fp32 * scale_fp32
+                return dequantized.to(device='mps', dtype=output_dtype)
+            return original_mxfp8_dequantize(qdata, params)
+        
+        _CKMXFP8_LAYOUT.dequantize = _ck_mxfp8_dequantize_patched
+    except ImportError:
+        pass
+    
+    _CKNVFP4_LAYOUT = _CKNvfp4Layout
+    original_nvfp4_dequantize = _CKNVFP4_LAYOUT.dequantize
+    
+    @classmethod
+    def _ck_nvfp4_dequantize_patched(cls, qdata, params):
+        if qdata.device.type == 'mps' or params.scale.device.type == 'mps':
+            output_dtype = params.orig_dtype
+            qdata_cpu = qdata.to(device='cpu')
+            scale_cpu = params.scale.to(device='cpu')
+            qdata_fp32 = qdata_cpu.to(dtype=torch.float32)
+            scale_fp32 = scale_cpu.to(dtype=torch.float32)
+            dequantized = qdata_fp32 * scale_fp32
+            return dequantized.to(device='mps', dtype=output_dtype)
+        return original_nvfp4_dequantize(qdata, params)
+    
+    _CKNVFP4_LAYOUT.dequantize = _ck_nvfp4_dequantize_patched
 except ImportError as e:
     logging.error(f"Failed to import comfy_kitchen, Error: {e}, fp8 and fp4 support will not be available.")
     _CK_AVAILABLE = False

@@ -321,7 +321,9 @@ def run_comfyui():
     # Config: .env file with HF_TOKEN=hf_xxx, added to .gitignore
     
     try:
-        subprocess.run([python_exec, "main.py", "--enable-manager"], cwd=COMFYUI_DIR)
+        env = os.environ.copy()
+        env["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+        subprocess.run([python_exec, "main.py", "--enable-manager"], cwd=COMFYUI_DIR, env=env)
     except KeyboardInterrupt:
         pass
     finally:
