@@ -424,8 +424,54 @@ def update_and_summary():
         progress.update(task, description=f"{len(before_commits.split(chr(10)))} commits encontrados")
         
         task.update(description="Trayendo cambios de upstream...")
+        
+        # Fetch both remotes (origin y upstream)
+        subprocess.run(["git", "fetch", "origin"], capture_output=True, cwd=COMFYUI_DIR)
         subprocess.run(["git", "fetch", "upstream"], capture_output=True, cwd=COMFYUI_DIR)
-        subprocess.run(["git", "pull", "upstream", "master"], capture_output=True, cwd=COMFYUI_DIR)
+        
+        # Stash local changes so merges can proceed
+        stash_result = subprocess.run(["git", "stash", "push", "-m", "build-sync: temporary stash", "--include-untracked"],
+                                       capture_output=True, cwd=COMFYUI_DIR)
+        if stash_result.returncode != 0:
+            console.print("[yellow]⚠ No hay cambios locales para guardar.[/]")
+        
+        # Merge origin/master first so local commits are integrated into fork
+        merge_origin = subprocess.run(["git", "merge", "origin/master", "--no-edit"],
+                                       capture_output=True, cwd=COMFYUI_DIR)
+        if merge_origin.returncode != 0:
+            console.print("[yellow]⚠ Conflict con origin/master — resolviendo manualmente.[/]")
+            console.print(merge_origin.stderr.decode() if merge_origin.stderr else "")
+        
+        # Merge upstream/master to bring upstream changes
+        merge_upstream = subprocess.run(["git", "merge", "upstream/master", "--no-edit"],
+                                         capture_output=True, cwd=COMFYUI_DIR)
+        if merge_upstream.returncode != 0:
+            console.print("[yellow]⚠ Conflict con upstream/master — resolviendo manualmente.[/]")
+            console.print(merge_upstream.stderr.decode() if merge_upstream.stderr else "")
+        
+        # Restore stashed changes
+        stash_pop = subprocess.run(["git", "stash", "pop"],
+                                    capture_output=True, cwd=COMFYUI_DIR)
+        if stash_pop.returncode != 0:
+            console.print("[yellow]⚠ Conflict al restaurar stash — revisar cambios manualmente.[/]")
+            console.print(stash_pop.stderr.decode() if stash_pop.stderr else "")
+        
+        # Check for local commits to push to origin
+        local_commits = subprocess.run(["git", "log", "origin/master..HEAD", "--oneline"],
+                                        capture_output=True, text=True, cwd=COMFYUI_DIR)
+        if local_commits.returncode == 0 and local_commits.stdout.strip():
+            console.print("\n  Commits locales para subir a origin:")
+            for line in local_commits.stdout.strip().splitlines():
+                console.print(f"    {line}")
+            console.print("  Subiendo a origin/master...")
+            push_result = subprocess.run(["git", "push", "origin", "master"],
+                                          capture_output=True, cwd=COMFYUI_DIR)
+            if push_result.returncode == 0:
+                console.print("  ✅ Subido a origin/master")
+            else:
+                console.print(f"  ⚠️ Error al subir: {push_result.stderr.decode() if push_result.stderr else 'error desconocido'}")
+        else:
+            console.print("  No hay commits locales para subir.")
         
         task.update(description="Actualizando ComfyUI-Manager...")
         if os.path.exists(MANAGER_DIR):
