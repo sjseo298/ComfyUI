@@ -15,6 +15,63 @@ if not _CK_STOCHASTIC_ROUNDING_AVAILABLE:
         raise NotImplementedError("comfy_kitchen does not support stochastic FP8 rounding")
 
 
+def _is_mps_device(device):
+    """Check if device is MPS (Apple Silicon)."""
+    return device.type == 'mps' if hasattr(device, 'type') else False
+
+
+def _ck_stochastic_rounding_fp8_mps_safe(value, rng, dtype):
+    """
+    MPS-safe version of _ck_stochastic_rounding_fp8.
+    
+    MPS doesn't support Float8_e4m3fn dtype, so we do all computation in float32
+    on CPU and return the result as float32. The caller handles the final conversion.
+    """
+    if dtype == torch.float8_e4m3fn:
+        EXPONENT_BITS, MANTISSA_BITS, EXPONENT_BIAS = 4, 3, 7
+    elif dtype == torch.float8_e5m2:
+        EXPONENT_BITS, MANTISSA_BITS, EXPONENT_BIAS = 5, 2, 15
+    else:
+        raise ValueError(f"Unsupported output_type: {dtype}")
+    
+    # Move to CPU if on MPS
+    value_cpu = value.to(device='cpu')
+    rng_cpu = rng.to(device='cpu')
+    
+    # Do all computation in float32 on CPU
+    x = value_cpu.to(dtype=torch.float32)
+    sign = torch.sign(x)
+    abs_x = x.abs()
+    sign = torch.where(abs_x == 0, torch.zeros_like(sign), sign)
+    
+    exponent = torch.clamp(
+        torch.floor(torch.log2(abs_x)) + EXPONENT_BIAS,
+        0, 2**EXPONENT_BITS - 1
+    )
+    normal_mask = ~(exponent == 0)
+    
+    # Calculate mantissa
+    mantissa_scaled = torch.where(
+        normal_mask,
+        (abs_x / (2.0 ** (exponent - EXPONENT_BIAS)) - 1.0) * (2**MANTISSA_BITS),
+        (abs_x / (2.0 ** (-EXPONENT_BIAS + 1 - MANTISSA_BITS)))
+    )
+    mantissa_scaled += rng_cpu.to(dtype=mantissa_scaled.dtype) * (1.0 / 256.0)
+    mantissa_scaled = mantissa_scaled.floor() / (2**MANTISSA_BITS)
+    
+    sign *= torch.where(
+        normal_mask,
+        (2.0 ** (exponent - EXPONENT_BIAS)) * (1.0 + mantissa_scaled),
+        (2.0 ** (-EXPONENT_BIAS + 1)) * mantissa_scaled
+    )
+    
+    info = torch.finfo(dtype)
+    torch.clamp(sign, min=info.min, max=info.max, out=sign)
+    
+    # Return as float32 - caller handles the final dtype conversion
+    return sign
+
+
 def calc_mantissa(abs_x, exponent, normal_mask, MANTISSA_BITS, EXPONENT_BIAS, generator=None):
     mantissa_scaled = torch.where(
         normal_mask,
@@ -34,10 +91,15 @@ def manual_stochastic_round_to_float8(x, dtype, generator=None):
     else:
         raise ValueError("Unsupported dtype")
 
-    x = x.half()
+    if _is_mps_device(x.device):
+        # MPS doesn't support float8, use float32
+        x = x.to(dtype=torch.float32)
+    else:
+        x = x.half()
+    
     sign = torch.sign(x)
     abs_x = x.abs()
-    sign = torch.where(abs_x == 0, 0, sign)
+    sign = torch.where(abs_x == 0, torch.zeros_like(sign), sign)
 
     # Combine exponent calculation and clamping
     exponent = torch.clamp(
@@ -58,6 +120,11 @@ def manual_stochastic_round_to_float8(x, dtype, generator=None):
 
     inf = torch.finfo(dtype)
     torch.clamp(sign, min=inf.min, max=inf.max, out=sign)
+    
+    # Return float32 on MPS
+    if _is_mps_device(x.device):
+        return sign.to(dtype=torch.float32)
+    
     return sign
 
 
@@ -70,6 +137,13 @@ def stochastic_rounding(value, dtype, seed=0):
     if dtype == torch.bfloat16:
         return value.to(dtype=torch.bfloat16)
     if dtype == torch.float8_e4m3fn or dtype == torch.float8_e5m2:
+        if _is_mps_device(value.device):
+            # MPS doesn't support float8 dtypes, so we do all computation on CPU in float32
+            generator = torch.Generator(device='cpu')
+            generator.manual_seed(seed)
+            rng = torch.randint(0, 256, value.size(), dtype=torch.uint8, device='cpu', generator=generator)
+            return _ck_stochastic_rounding_fp8_mps_safe(value, rng, dtype)
+
         generator = torch.Generator(device=value.device)
         generator.manual_seed(seed)
         if _CK_STOCHASTIC_ROUNDING_AVAILABLE:
@@ -165,12 +239,21 @@ def stochastic_round_quantize_nvfp4_block(x, per_tensor_scale, generator):
     block_size = 16
 
     x = x.reshape(orig_shape[0], -1, block_size)
-    scaled_block_scales_fp8 = torch.clamp(((torch.amax(torch.abs(x), dim=-1)) / F4_E2M1_MAX) / per_tensor_scale.to(x.dtype), max=F8_E4M3_MAX).to(torch.float8_e4m3fn)
-    x = x / (per_tensor_scale.to(x.dtype) * scaled_block_scales_fp8.to(x.dtype)).unsqueeze(-1)
+    
+    if _is_mps_device(x.device):
+        # MPS doesn't support float8, use float32 for block scales
+        scaled_block_scales_fp8 = torch.clamp(((torch.amax(torch.abs(x), dim=-1)) / F4_E2M1_MAX) / per_tensor_scale.to(x.dtype), max=F8_E4M3_MAX).to(dtype=torch.float32)
+        x = x / (per_tensor_scale.to(x.dtype) * scaled_block_scales_fp8.to(x.dtype)).unsqueeze(-1)
+        x = x.view(orig_shape).nan_to_num()
+        data_lp = stochastic_float_to_fp4_e2m1(x, generator=generator)
+        return data_lp, scaled_block_scales_fp8
+    else:
+        scaled_block_scales_fp8 = torch.clamp(((torch.amax(torch.abs(x), dim=-1)) / F4_E2M1_MAX) / per_tensor_scale.to(x.dtype), max=F8_E4M3_MAX).to(torch.float8_e4m3fn)
+        x = x / (per_tensor_scale.to(x.dtype) * scaled_block_scales_fp8.to(x.dtype)).unsqueeze(-1)
 
-    x = x.view(orig_shape).nan_to_num()
-    data_lp = stochastic_float_to_fp4_e2m1(x, generator=generator)
-    return data_lp, scaled_block_scales_fp8
+        x = x.view(orig_shape).nan_to_num()
+        data_lp = stochastic_float_to_fp4_e2m1(x, generator=generator)
+        return data_lp, scaled_block_scales_fp8
 
 
 def stochastic_round_quantize_nvfp4(x, per_tensor_scale, pad_16x, seed=0):
@@ -213,8 +296,13 @@ def stochastic_round_quantize_nvfp4_by_block(x, per_tensor_scale, pad_16x, seed=
 
     orig_shape = list(orig_shape)
 
-    output_fp4 = torch.empty(orig_shape[:-1] + [orig_shape[-1] // 2], dtype=torch.uint8, device=x.device)
-    output_block = torch.empty(orig_shape[:-1] + [orig_shape[-1] // 16], dtype=torch.float8_e4m3fn, device=x.device)
+    if _is_mps_device(x.device):
+        # MPS doesn't support float8, use float32 for output
+        output_fp4 = torch.empty(orig_shape[:-1] + [orig_shape[-1] // 2], dtype=torch.uint8, device=x.device)
+        output_block = torch.empty(orig_shape[:-1] + [orig_shape[-1] // 16], dtype=torch.float32, device=x.device)
+    else:
+        output_fp4 = torch.empty(orig_shape[:-1] + [orig_shape[-1] // 2], dtype=torch.uint8, device=x.device)
+        output_block = torch.empty(orig_shape[:-1] + [orig_shape[-1] // 16], dtype=torch.float8_e4m3fn, device=x.device)
 
     generator = torch.Generator(device=x.device)
     generator.manual_seed(seed)
@@ -260,7 +348,15 @@ def stochastic_round_quantize_mxfp8_by_block(x, pad_32x, seed=0):
 
     # Scale per-block then stochastic round
     data_scaled = (x_blocked.float() / block_scales_f32.unsqueeze(-1)).reshape(rows, cols)
-    output_fp8 = stochastic_rounding(data_scaled, torch.float8_e4m3fn, seed=seed)
-
-    block_scales_e8m0 = torch.where(zero_mask, torch.zeros_like(block_scales_e8m0), block_scales_e8m0)
-    return output_fp8, to_blocked(block_scales_e8m0, flatten=False).view(torch.float8_e8m0fnu)
+    
+    if _is_mps_device(x.device):
+        # MPS doesn't support float8, return float32
+        output_fp8 = stochastic_rounding(data_scaled, torch.float8_e4m3fn, seed=seed)
+        output_fp8 = output_fp8.to(dtype=torch.float32)
+        block_scales_e8m0 = torch.where(zero_mask, torch.zeros_like(block_scales_e8m0), block_scales_e8m0)
+        blocked_scales = to_blocked(block_scales_e8m0, flatten=False)
+        return output_fp8, blocked_scales
+    else:
+        output_fp8 = stochastic_rounding(data_scaled, torch.float8_e4m3fn, seed=seed)
+        block_scales_e8m0 = torch.where(zero_mask, torch.zeros_like(block_scales_e8m0), block_scales_e8m0)
+        return output_fp8, to_blocked(block_scales_e8m0, flatten=False).view(torch.float8_e8m0fnu)
